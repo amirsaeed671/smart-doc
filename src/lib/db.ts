@@ -80,6 +80,13 @@ async function init(): Promise<Db> {
   if (!url && process.env.VERCEL) {
     throw new Error('DATABASE_URL must be set in production (see README → Deploy).')
   }
+  if (url && process.env.VERCEL && /@db\.[a-z0-9]+\.supabase\.co/.test(url)) {
+    // Supabase's direct host is IPv6-only and Vercel has no IPv6 egress (fails with ENOTFOUND).
+    throw new Error(
+      'DATABASE_URL uses the Supabase direct connection (db.<ref>.supabase.co), which Vercel cannot reach. ' +
+        'Use the Transaction pooler URI instead (…pooler.supabase.com:6543).',
+    )
+  }
   const db = url ? await createPgDb(url) : await createPgliteDb(process.env.PGLITE_DIR ?? '.data/pglite')
   for (const statement of SCHEMA.split(';').map((s) => s.trim()).filter(Boolean)) {
     await db.query(statement)
