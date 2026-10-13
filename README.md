@@ -2,7 +2,7 @@
 
 A lightweight collaborative document editor inspired by Google Docs. You can create, format, import, share and co-edit documents, with live presence and change sync.
 
-**Live demo:** _see [`SUBMISSION.md`](SUBMISSION.md)_ · **Demo accounts:** `alice@ajaia.dev`, `bob@ajaia.dev`, `carol@ajaia.dev`, all with password **`demo1234`**. The login screen also has one-click buttons for each.
+**Live demo:** https://smart-doc-indol-gamma.vercel.app/ · **Demo accounts:** `alice@ajaia.dev`, `bob@ajaia.dev`, `carol@ajaia.dev`, all with password **`demo1234`**. The login screen also has one-click buttons for each.
 
 ![Editor](docs/screenshots/02-editor.png)
 

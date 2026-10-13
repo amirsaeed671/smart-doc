@@ -4,7 +4,7 @@
 
 | What | Where |
 | --- | --- |
-| Live app | **TODO: Vercel URL** |
+| Live app | **https://smart-doc-indol-gamma.vercel.app/** |
 | Source code | https://github.com/amirsaeed671/smart-doc (also in this folder) |
 | Walkthrough video | See [`VIDEO_URL.txt`](VIDEO_URL.txt) |
 
