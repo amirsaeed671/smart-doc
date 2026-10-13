@@ -86,6 +86,21 @@ export const MIGRATIONS: { id: number; name: string; sql?: string; run?: (db: Db
     name: 'demo comment thread',
     run: insertDemoComments,
   },
+  {
+    // Supabase exposes the public schema over its REST API to anyone holding the (public) anon key.
+    // RLS with no policies denies those roles everything. The app connects as the table owner,
+    // which bypasses RLS, and enforces access itself in the API layer.
+    id: 4,
+    name: 'enable row level security',
+    sql: /* sql */ `
+      ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE document_shares ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE document_comments ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE document_versions ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE schema_migrations ENABLE ROW LEVEL SECURITY
+    `,
+  },
 ]
 
 export async function migrate(db: Db): Promise<void> {

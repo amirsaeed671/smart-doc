@@ -26,4 +26,24 @@ describe('migrations', () => {
     const applied = await db.query<{ id: number }>('SELECT id FROM schema_migrations ORDER BY id')
     expect(applied.map((r) => r.id)).toEqual(MIGRATIONS.map((m) => m.id))
   })
+  it('locks every table against non-owner roles (Supabase anon/authenticated) while the app keeps access', async () => {
+    const pg = new PGlite('memory://')
+    const db: Db = { query: async (sql, params) => (await pg.query(sql, params)).rows as never }
+    await migrate(db)
+    await db.query(`INSERT INTO users VALUES ('00000000-0000-4000-8000-000000000001', 'a@x.dev', 'A', 'h', now())`)
+
+    const tables = await db.query<{ tablename: string; rowsecurity: boolean }>(
+      `SELECT tablename, rowsecurity FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`,
+    )
+    expect(tables.filter((t) => !t.rowsecurity)).toEqual([])
+
+    // Simulate Supabase's anon role: even with table privileges granted, RLS hides every row.
+    await db.query('CREATE ROLE anon')
+    await db.query('GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA public TO anon')
+    await db.query('SET ROLE anon')
+    expect(await db.query('SELECT * FROM users')).toEqual([])
+    await expect(db.query(`INSERT INTO users VALUES ('00000000-0000-4000-8000-000000000002', 'b@x.dev', 'B', 'h', now())`)).rejects.toThrow(/row-level security/)
+    await db.query('RESET ROLE')
+    expect(await db.query('SELECT id FROM users')).toHaveLength(1) // owner (the app) unaffected
+  })
 })

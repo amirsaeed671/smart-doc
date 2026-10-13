@@ -39,6 +39,8 @@ Formatting covers the brief's list plus a few cheap extras: quotes, code blocks,
 
 **Exports: Markdown on the server, PDF through the browser.** Markdown is a small serializer over the document JSON, unit-tested for every node and mark type. PDF uses the browser's print engine with a print stylesheet. Server-side PDF would mean running headless Chrome in a serverless function (slow cold starts and large bundles) for output that's no better.
 
+**Defence in depth on Supabase: RLS on, no policies.** Supabase serves the `public` schema over a REST API to anyone holding the anon key, and that key is public because the browser uses it for Realtime. Every table therefore has row-level security enabled with no policies, which denies the anon and authenticated roles everything. The server connects as the table owner (which bypasses RLS) and enforces access in the API, so there is exactly one way in to the data.
+
 **Schema changes go through versioned migrations.** The live database was created by the first release, so `migrations.ts` records applied migrations and rewrites the role CHECK constraint in place. Every statement is idempotent, so two cold starts racing on a fresh database are harmless. A test upgrades a first-release schema and checks nothing is lost.
 
 **Import creates a new document.** Of the options in the brief, "upload a file → get an editable doc" is the one people actually use when migrating notes. `.txt`, `.md` and `.docx` (via `mammoth`) cover common sources. 2 MB limit, with errors for unsupported, empty and corrupt files.
