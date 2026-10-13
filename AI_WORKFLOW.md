@@ -1,0 +1,33 @@
+# AI workflow note
+
+> Draft written from the actual build log. Edit it into your own voice before submitting.
+
+## Tools used
+
+- **Claude Code** (agentic coding assistant in a cloud dev container) for scaffolding, implementation, running tests, and driving a headless browser against the running app.
+- **Playwright** (scripted by the assistant) to check UX and multi-user behaviour in real browsers, with screenshots I reviewed.
+
+## Where AI materially sped things up
+
+- **Scaffolding and boilerplate.** Next.js config, route handlers, the CSS system, and the share dialog came out in minutes instead of an hour or two.
+- **Library glue.** Wiring TipTap's schema into server-side validation (`getSchema` + `Node.fromJSON().check()`), the HTML → ProseMirror import path with `@tiptap/html/server`, and Supabase Presence/Broadcast. The assistant checked package internals (e.g. confirmed that `@tiptap/html/server` runs happy-dom with JavaScript evaluation disabled) instead of guessing.
+- **Test scaffolding.** The Vitest suites run against in-memory Postgres (PGlite), and a three-user Playwright smoke test (Alice/Bob/Carol) exercises sharing, live sync, conflicts and revocation end to end.
+
+## What I changed or rejected
+
+- **Scope decisions stayed human.** I picked the deploy target (Vercel + Supabase) and the realtime depth: presence + live sync with conflict detection, **not** full CRDT co-editing. That kept the 4–6 h budget for the core loop.
+- **Rejected sending document content over the realtime socket.** Public Supabase channels aren't an auth boundary, so the design broadcasts only "version N saved" and receivers re-fetch through the authorised API.
+- **Rejected last-write-wins saving** (the simplest generated version) in favour of optimistic locking with a 409 and an explicit "load theirs / keep mine" choice.
+- **Bugs that the e2e run caught in generated code, which I fixed:**
+  - `editor.setEditable()` emits an update event by default, so just opening a document marked it dirty and triggered a pointless save. Fixed with `setEditable(editable, false)`.
+  - TipTap's `commands.focus()` waits an animation frame, so pressing Enter in the title and typing straight away lost the first character into the title. Fixed by focusing the view synchronously.
+  - The production `SESSION_SECRET` guard also blocked `npm start` locally. Narrowed to Vercel only.
+- **Tooling version check.** The latest TypeScript (7.x) broke Next 15's config loader, so I pinned TypeScript 5.9.
+- **Didn't accept "flaky" as an answer.** One intermittent e2e failure was traced to a real cause: the test typed `" + bob"` at the start of a paragraph, which triggers TipTap's `+ ` → bullet-list shortcut, and it raced a closing modal. I fixed the test rather than adding retries, and checked the product behaviour was correct (both clients converged on the same content).
+
+## How correctness, UX and reliability were verified
+
+- **Unit/integration tests** (`npm test`) on the rules that matter most: access control for each role, 404 for non-shared docs, share/revoke, rich-text round-trip, conflict detection, schema validation, import sanitisation and file validation.
+- **Three-browser e2e run** (`npm run e2e`) repeated several times on a fresh DB: create → format → reload → share → live sync both directions → viewer read-only → offline edit conflict → resolve → import `.md` → revoke while the viewer has the doc open.
+- **Screenshots reviewed by eye** for every main screen (dashboard, editor, share dialog, viewer mode, conflict banner, imported doc). Previews were adjusted after review (they repeated the title).
+- `tsc --noEmit` and `next build` are clean.

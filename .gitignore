@@ -1,0 +1,9 @@
+node_modules
+.next
+.data
+.env
+.env.local
+*.tsbuildinfo
+.vercel
+coverage
+e2e/screenshots
