@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '@/lib/client'
+import { ROLE_LABELS } from '@/lib/permissions'
 import type { DocumentDetail, PublicUser, Share, ShareRole } from '@/lib/types'
 import { Avatar } from './AppHeader'
 
@@ -94,8 +95,7 @@ export function ShareDialog({
               ))}
             </datalist>
             <select value={role} onChange={(e) => setRole(e.target.value as ShareRole)} aria-label="Permission">
-              <option value="editor">Can edit</option>
-              <option value="viewer">Can view</option>
+              <RoleOptions />
             </select>
             <button className="btn btn-primary" disabled={busy}>
               Share
@@ -107,6 +107,16 @@ export function ShareDialog({
         {error && (
           <p className="error" role="alert">
             {error}
+          </p>
+        )}
+
+        {isOwner && (
+          <p className="muted small role-help">
+            {(['viewer', 'commenter', 'editor'] as const).map((r) => (
+              <span key={r}>
+                <strong>{ROLE_LABELS[r].label}</strong>: {ROLE_LABELS[r].description.toLowerCase()}.{' '}
+              </span>
+            ))}
           </p>
         )}
 
@@ -136,20 +146,31 @@ export function ShareDialog({
                     onChange={(e) => changeRole(s.user.email, e.target.value as ShareRole)}
                     aria-label={`Permission for ${s.user.name}`}
                   >
-                    <option value="editor">Can edit</option>
-                    <option value="viewer">Can view</option>
+                    <RoleOptions />
                   </select>
                   <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => revoke(s.user.id)}>
                     Remove
                   </button>
                 </span>
               ) : (
-                <span className="muted small">{s.role === 'editor' ? 'Can edit' : 'Can view'}</span>
+                <span className="muted small">{ROLE_LABELS[s.role].label}</span>
               )}
             </li>
           ))}
         </ul>
       </div>
     </div>
+  )
+}
+
+function RoleOptions() {
+  return (
+    <>
+      {(['editor', 'commenter', 'viewer'] as const).map((r) => (
+        <option key={r} value={r}>
+          {ROLE_LABELS[r].label}
+        </option>
+      ))}
+    </>
   )
 }

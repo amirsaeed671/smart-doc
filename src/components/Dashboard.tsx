@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useRef, useState } from 'react'
 import { api, ApiError, timeAgo } from '@/lib/client'
+import { ROLE_LABELS } from '@/lib/permissions'
 import type { DocumentDetail, DocumentSummary, PublicUser } from '@/lib/types'
 import { AppHeader, Avatar } from './AppHeader'
 
@@ -150,7 +151,7 @@ function DocList({
                     <Avatar user={d.owner} size={22} /> {d.owner.name}
                   </span>
                 )}
-                {d.role !== 'owner' && <span className={`badge badge-${d.role}`}>{d.role === 'editor' ? 'Can edit' : 'View only'}</span>}
+                {d.role !== 'owner' && <span className={`badge badge-${d.role}`}>{ROLE_LABELS[d.role].label}</span>}
                 <span className="muted small" title={new Date(d.updatedAt).toLocaleString()}>
                   {timeAgo(d.updatedAt)}
                   {d.updatedByName ? ` · ${d.updatedByName}` : ''}

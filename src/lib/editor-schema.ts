@@ -9,6 +9,9 @@ import type { JSONContent } from '@tiptap/core'
 export const baseExtensions = [
   StarterKit.configure({
     heading: { levels: [1, 2, 3] },
+    // The trailing-node plugin silently appends a paragraph on *any* transaction (even view-only
+    // ones like comment highlights), which looked like a user edit and triggered spurious saves.
+    trailingNode: false,
     link: { openOnClick: false, autolink: true, defaultProtocol: 'https' },
   }),
 ]

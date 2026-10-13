@@ -14,13 +14,44 @@ export const SEED_USERS = [
 
 const [alice, bob] = SEED_USERS
 
+export const Q4_DOC_ID = '00000000-0000-4000-9000-000000000001'
+
+/** A sample comment thread, so reviewers see comments without creating one first. */
+export const DEMO_COMMENTS = [
+  {
+    id: '00000000-0000-4000-a000-000000000001',
+    parent: null,
+    author: bob.id,
+    quote: 'Decide on real-time co-editing',
+    body: 'Presence + conflict detection covers the pilot. Can we revisit CRDT co-editing after we get feedback?',
+  },
+  {
+    id: '00000000-0000-4000-a000-000000000002',
+    parent: '00000000-0000-4000-a000-000000000001',
+    author: alice.id,
+    quote: null,
+    body: 'Agreed, adding it to the next planning cycle.',
+  },
+]
+
+export async function insertDemoComments(db: Db): Promise<void> {
+  for (const c of DEMO_COMMENTS) {
+    await db.query(
+      `INSERT INTO document_comments (id, document_id, parent_id, author_id, body, quote)
+       SELECT $1, $2, $3, $4, $5, $6 WHERE EXISTS (SELECT 1 FROM documents WHERE id = $2)
+       ON CONFLICT DO NOTHING`,
+      [c.id, Q4_DOC_ID, c.parent, c.author, c.body, c.quote],
+    )
+  }
+}
+
 const p = (text: string) => ({ type: 'paragraph', content: [{ type: 'text', text }] })
 const h = (level: number, text: string) => ({ type: 'heading', attrs: { level }, content: [{ type: 'text', text }] })
 const li = (text: string) => ({ type: 'listItem', content: [p(text)] })
 
 const SEED_DOCS = [
   {
-    id: '00000000-0000-4000-9000-000000000001',
+    id: Q4_DOC_ID,
     owner: alice.id,
     title: 'Q4 Planning Notes',
     shares: [{ user: bob.id, role: 'editor' }],
@@ -83,5 +114,11 @@ export async function seedDatabase(db: Db): Promise<void> {
         [d.id, s.user, s.role],
       )
     }
+    await db.query(
+      `INSERT INTO document_versions (id, document_id, version, title, content, author_id, label)
+       VALUES (gen_random_uuid(), $1, 1, $2, $3::jsonb, $4, 'Created')`,
+      [d.id, d.title, JSON.stringify(d.content), d.owner],
+    )
   }
+  await insertDemoComments(db)
 }

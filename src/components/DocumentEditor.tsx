@@ -5,20 +5,32 @@ import { EditorContent, useEditor, type Editor } from '@tiptap/react'
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError, colorFor, timeAgo } from '@/lib/client'
+import { CommentHighlights, findQuote, selectedQuote, setCommentHighlights } from '@/lib/comment-highlights'
 import { baseExtensions } from '@/lib/editor-schema'
+import { can, ROLE_LABELS } from '@/lib/permissions'
 import { realtimeEnabled, useDocumentChannel, type DocEvent } from '@/lib/realtime'
-import type { DocumentDetail, PublicUser } from '@/lib/types'
+import type { CommentThread, DocumentDetail, PublicUser } from '@/lib/types'
 import { AppHeader, Avatar } from './AppHeader'
+import { CommentsPanel, type CommentActions } from './CommentsPanel'
+import { ExportMenu } from './ExportMenu'
+import { HistoryPanel } from './HistoryPanel'
 import { ShareDialog } from './ShareDialog'
 import { Toolbar } from './Toolbar'
 
 type SaveStatus = 'saved' | 'unsaved' | 'saving' | 'error'
+type Panel = 'comments' | 'history' | null
 
 const AUTOSAVE_DELAY_MS = 800
 const RETRY_DELAY_MS = 4000
 const POLL_INTERVAL_MS = 5000
+/** Typing pulses are sent at most this often, and a collaborator counts as "editing" for a bit longer. */
+const ACTIVITY_THROTTLE_MS = 1500
+const ACTIVITY_TTL_MS = 4000
 
-const canEditRole = (role: DocumentDetail['role']) => role === 'owner' || role === 'editor'
+// useEditor compares its options on every render and calls editor.setOptions() when they differ,
+// which re-applies the view state and can clobber a DOM selection ProseMirror hasn't read yet
+// (the cursor would jump to the start of the doc). Keep every option referentially stable.
+const EDITOR_PROPS = { attributes: { class: 'prose', spellcheck: 'true' } }
 
 /** Replace editor content with a remote version, keeping the cursor roughly where it was. */
 function applyRemoteContent(editor: Editor, content: DocumentDetail['content']) {
@@ -36,6 +48,12 @@ export function DocumentEditor({ user, initial }: { user: PublicUser; initial: D
   const [accessLost, setAccessLost] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [shareOpen, setShareOpen] = useState(false)
+  const [panel, setPanel] = useState<Panel>(null)
+  const [threads, setThreads] = useState<CommentThread[] | null>(null)
+  const [activeCommentId, setActiveCommentId] = useState<string | null>(null)
+  const [draftQuote, setDraftQuote] = useState<string | null>(null)
+  const [selectionText, setSelectionText] = useState('')
+  const [activity, setActivity] = useState<Record<string, number>>({})
 
   // Save-loop state lives in refs so async callbacks always see the latest values.
   const versionRef = useRef(initial.version)
@@ -44,10 +62,15 @@ export function DocumentEditor({ user, initial }: { user: PublicUser; initial: D
   const savingRef = useRef(false)
   const conflictRef = useRef(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const lastActivitySentRef = useRef(0)
   const titleInputRef = useRef<HTMLInputElement>(null)
   const editorRef = useRef<Editor | null>(null)
+  const activateCommentRef = useRef<(id: string) => void>(() => {})
+  const editableRef = useRef(can(initial.role, 'edit'))
 
-  const editable = canEditRole(doc.role) && !accessLost
+  const role = doc.role
+  const editable = can(role, 'edit') && !accessLost
+  editableRef.current = editable
   const me = useMemo(() => ({ ...user, color: colorFor(user.id) }), [user])
 
   const flashNotice = useCallback((message: string) => {
@@ -82,22 +105,55 @@ export function DocumentEditor({ user, initial }: { user: PublicUser; initial: D
     }
   }, [initial.id, user.name, flashNotice])
 
+  const loadComments = useCallback(async () => {
+    try {
+      setThreads((await api<{ comments: CommentThread[] }>(`/api/documents/${initial.id}/comments`)).comments)
+    } catch {
+      /* access loss is surfaced by refreshFromServer */
+    }
+  }, [initial.id])
+
   const onRemoteEvent = useCallback(
     (event: DocEvent) => {
+      if (event.type === 'activity') {
+        setActivity((a) => ({ ...a, [event.userId]: Date.now() }))
+        return
+      }
+      if (event.type === 'comments') return void loadComments()
       if (event.type === 'saved' && event.version <= versionRef.current) return
       void refreshFromServer()
     },
-    [refreshFromServer],
+    [refreshFromServer, loadComments],
   )
 
   const { peers, connected, broadcast } = useDocumentChannel(initial.id, me, onRemoteEvent)
 
+  useEffect(() => {
+    void loadComments()
+  }, [loadComments])
+
   // Without Supabase Realtime configured, fall back to light polling so changes still show up.
   useEffect(() => {
     if (realtimeEnabled) return
-    const id = setInterval(() => document.visibilityState === 'visible' && void refreshFromServer(), POLL_INTERVAL_MS)
+    const id = setInterval(() => {
+      if (document.visibilityState !== 'visible') return
+      void refreshFromServer()
+      void loadComments()
+    }, POLL_INTERVAL_MS)
     return () => clearInterval(id)
-  }, [refreshFromServer])
+  }, [refreshFromServer, loadComments])
+
+  // Expire "is editing" indicators.
+  useEffect(() => {
+    const id = setInterval(() => {
+      setActivity((a) => {
+        const now = Date.now()
+        const live = Object.entries(a).filter(([, t]) => now - t < ACTIVITY_TTL_MS)
+        return live.length === Object.keys(a).length ? a : Object.fromEntries(live)
+      })
+    }, 1000)
+    return () => clearInterval(id)
+  }, [])
 
   // ---- Saving -----------------------------------------------------------------------
 
@@ -143,18 +199,33 @@ export function DocumentEditor({ user, initial }: { user: PublicUser; initial: D
     }
   }, [initial.id, broadcast, user.name, refreshFromServer])
 
+  const extensions = useMemo(
+    () => [
+      ...baseExtensions,
+      Placeholder.configure({ placeholder: 'Start writing…' }),
+      CommentHighlights.configure({ onActivate: activateCommentRef }),
+    ],
+    [],
+  )
+  const initialEditable = useRef(can(initial.role, 'edit')).current
+
   const editor = useEditor({
-    extensions: [...baseExtensions, Placeholder.configure({ placeholder: 'Start writing…' })],
+    extensions,
     content: initial.content,
-    editable: canEditRole(initial.role),
+    editable: initialEditable,
     immediatelyRender: false,
-    editorProps: { attributes: { class: 'prose', spellcheck: 'true' } },
+    editorProps: EDITOR_PROPS,
     onUpdate: () => {
+      if (!editableRef.current) return // read-only roles never save, whatever plugins do to the view
       dirtyRef.current = true
       editCountRef.current++
       setStatus('unsaved')
       clearTimeout(timerRef.current)
       timerRef.current = setTimeout(() => void save(), AUTOSAVE_DELAY_MS)
+      if (Date.now() - lastActivitySentRef.current > ACTIVITY_THROTTLE_MS) {
+        lastActivitySentRef.current = Date.now()
+        broadcast({ type: 'activity', userId: user.id, name: user.name })
+      }
     },
   })
   editorRef.current = editor
@@ -163,12 +234,109 @@ export function DocumentEditor({ user, initial }: { user: PublicUser; initial: D
     editor?.setEditable(editable, false) // false: toggling editability is not a content change
   }, [editor, editable])
 
-  // Ctrl/Cmd+S saves immediately; warn before leaving with unsaved changes.
+  // ---- Comments ---------------------------------------------------------------------
+
+  activateCommentRef.current = (id: string) => {
+    setActiveCommentId(id)
+    setPanel('comments')
+  }
+
+  // Keep highlights in sync with the open threads and the active one.
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return
+    const open = (threads ?? []).filter((t) => t.quote && !t.resolvedAt).map((t) => ({ id: t.id, quote: t.quote! }))
+    setCommentHighlights(editor, panel === 'history' ? [] : open, activeCommentId)
+  }, [editor, threads, activeCommentId, panel])
+
+  // Track selected text (works for read-only editors too) to offer "comment on selection".
+  useEffect(() => {
+    if (!editor) return
+    const update = () => setSelectionText(selectedQuote(editor))
+    document.addEventListener('selectionchange', update)
+    editor.on('selectionUpdate', update)
+    return () => {
+      document.removeEventListener('selectionchange', update)
+      editor.off('selectionUpdate', update)
+    }
+  }, [editor])
+
+  const startComment = useCallback(() => {
+    const quote = editorRef.current ? selectedQuote(editorRef.current) : ''
+    setDraftQuote(quote || null)
+    setActiveCommentId(null)
+    setPanel('comments')
+  }, [])
+
+  const commentMutation = useCallback(
+    async (request: Promise<{ comments: CommentThread[] }>) => {
+      try {
+        setThreads((await request).comments)
+        broadcast({ type: 'comments', by: user.name })
+        return true
+      } catch (err) {
+        flashNotice(err instanceof ApiError ? err.message : 'Could not update comments.')
+        return false
+      }
+    },
+    [broadcast, user.name, flashNotice],
+  )
+
+  const commentActions: CommentActions = useMemo(() => {
+    const base = `/api/documents/${initial.id}/comments`
+    return {
+      add: (body, quote) => commentMutation(api(base, { method: 'POST', body: JSON.stringify({ body, quote }) })),
+      reply: (parentId, body) => commentMutation(api(base, { method: 'POST', body: JSON.stringify({ body, parentId }) })),
+      resolve: async (id, resolved) => {
+        await commentMutation(api(`${base}/${id}`, { method: 'PATCH', body: JSON.stringify({ resolved }) }))
+        if (resolved) setActiveCommentId(null)
+      },
+      remove: async (id) => {
+        await commentMutation(api(`${base}/${id}`, { method: 'DELETE' }))
+      },
+    }
+  }, [initial.id, commentMutation])
+
+  const jumpToComment = (id: string) => {
+    setActiveCommentId(id)
+    document.querySelector(`[data-comment-id="${id}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }
+
+  // ---- Version history --------------------------------------------------------------
+
+  async function restore(versionId: string) {
+    if (dirtyRef.current && !confirm('You have unsaved changes. Restoring will discard them. Continue?')) return
+    try {
+      const { document: restored } = await api<{ document: DocumentDetail }>(
+        `/api/documents/${initial.id}/versions/${versionId}/restore`,
+        { method: 'POST' },
+      )
+      clearTimeout(timerRef.current)
+      if (editor) applyRemoteContent(editor, restored.content)
+      versionRef.current = restored.version
+      dirtyRef.current = false
+      conflictRef.current = false
+      setConflict(null)
+      setStatus('saved')
+      setDoc((d) => ({ ...restored, content: d.content }))
+      broadcast({ type: 'saved', version: restored.version, by: user.name })
+      flashNotice('Version restored')
+    } catch (err) {
+      flashNotice(err instanceof ApiError ? err.message : 'Could not restore that version.')
+    }
+  }
+
+  // ---- Keyboard shortcuts & lifecycle -----------------------------------------------
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      const mod = e.metaKey || e.ctrlKey
+      if (mod && e.key.toLowerCase() === 's') {
         e.preventDefault()
         void save()
+      }
+      if (mod && e.altKey && e.key.toLowerCase() === 'm' && can(role, 'comment')) {
+        e.preventDefault()
+        startComment()
       }
     }
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -180,7 +348,7 @@ export function DocumentEditor({ user, initial }: { user: PublicUser; initial: D
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('beforeunload', onBeforeUnload)
     }
-  }, [save])
+  }, [save, startComment, role])
 
   // Freshly created documents: put the cursor in the title so naming is the first step.
   useEffect(() => {
@@ -236,21 +404,35 @@ export function DocumentEditor({ user, initial }: { user: PublicUser; initial: D
     document.title = `${doc.title} · Smart Doc`
   }, [doc.title])
 
+  // ---- Render -----------------------------------------------------------------------
+
   const statusLabel = conflict
     ? 'Not saved: conflict'
     : { saved: 'All changes saved', unsaved: 'Unsaved changes…', saving: 'Saving…', error: 'Save failed, retrying…' }[status]
+  const editingNow = peers.filter((p) => activity[p.id])
+  const openThreads = threads?.filter((t) => !t.resolvedAt).length ?? 0
+  const firstNode = editor?.state.doc.firstChild
+  const printTitle = !(firstNode?.type.name === 'heading' && firstNode.textContent === doc.title)
 
   return (
     <>
       <AppHeader user={user}>
-        <div className="presence" aria-label="People viewing this document">
+        <div className="presence" aria-label="People in this document">
           {peers.map((p) => (
-            <Avatar key={p.id} user={p} size={28} title={`${p.name} is viewing`} />
+            <span key={p.id} className={`presence-avatar${activity[p.id] ? ' is-editing' : ''}`} style={{ color: p.color }}>
+              <Avatar user={p} size={28} title={`${p.name} is ${activity[p.id] ? 'editing' : 'viewing'}`} />
+            </span>
           ))}
-          {realtimeEnabled ? (
+          {realtimeEnabled && (
             <span className={`live-dot${connected ? ' is-on' : ''}`} title={connected ? 'Live' : 'Connecting…'} />
-          ) : null}
-          {peers.length > 0 && <span className="muted small">{peers.length} other{peers.length > 1 ? 's' : ''} here</span>}
+          )}
+          <span className="muted small presence-label" aria-live="polite">
+            {editingNow.length > 0
+              ? `${editingNow.map((p) => p.name.split(' ')[0]).join(', ')} ${editingNow.length > 1 ? 'are' : 'is'} editing…`
+              : peers.length > 0
+                ? `${peers.length} other${peers.length > 1 ? 's' : ''} here`
+                : null}
+          </span>
         </div>
       </AppHeader>
 
@@ -290,26 +472,54 @@ export function DocumentEditor({ user, initial }: { user: PublicUser; initial: D
             Edited {timeAgo(doc.updatedAt)}
             {doc.updatedByName ? ` by ${doc.updatedByName}` : ''}
           </span>
-          {doc.role !== 'owner' && (
-            <span className={`badge badge-${doc.role}`}>
-              {doc.role === 'editor' ? `Shared by ${doc.owner.name}` : 'View only'}
+          {role !== 'owner' && (
+            <span className={`badge badge-${role}`} title={`Shared by ${doc.owner.name}`}>
+              {ROLE_LABELS[role].label}
             </span>
           )}
+          <button
+            className={`btn btn-sm${panel === 'comments' ? ' is-on' : ''}`}
+            onClick={() => setPanel((p) => (p === 'comments' ? null : 'comments'))}
+            aria-pressed={panel === 'comments'}
+          >
+            💬 Comments{openThreads > 0 && <span className="count">{openThreads}</span>}
+          </button>
+          <button
+            className={`btn btn-sm${panel === 'history' ? ' is-on' : ''}`}
+            onClick={() => setPanel((p) => (p === 'history' ? null : 'history'))}
+            aria-pressed={panel === 'history'}
+          >
+            🕘 History
+          </button>
+          <ExportMenu docId={initial.id} title={doc.title} />
           <button className="btn btn-primary" onClick={() => setShareOpen(true)}>
             Share
           </button>
         </div>
       </div>
 
-      {editor && <Toolbar editor={editor} disabled={!editable} />}
+      {editor && (
+        <Toolbar
+          editor={editor}
+          disabled={!editable}
+          canComment={can(role, 'comment') && !accessLost}
+          hasSelection={selectionText.length > 0}
+          onComment={startComment}
+        />
+      )}
 
       {accessLost && (
         <div className="banner banner-error" role="alert">
           You no longer have access to this document. <Link href="/">Back to documents</Link>
         </div>
       )}
-      {!accessLost && doc.role === 'viewer' && (
-        <div className="banner">You have view-only access. Ask {doc.owner.name} for edit access.</div>
+      {!accessLost && role === 'viewer' && (
+        <div className="banner">You have view-only access. Ask {doc.owner.name} if you need to comment or edit.</div>
+      )}
+      {!accessLost && role === 'commenter' && (
+        <div className="banner">
+          You can comment but not edit. Select text and press <strong>💬 Comment</strong>.
+        </div>
       )}
       {conflict && (
         <div className="banner banner-warn" role="alert">
@@ -329,11 +539,39 @@ export function DocumentEditor({ user, initial }: { user: PublicUser; initial: D
       )}
       {notice && <div className="toast">{notice}</div>}
 
-      <main className="page-wrap" onClick={(e) => e.target === e.currentTarget && editor?.commands.focus('end')}>
-        <article className="page">
-          <EditorContent editor={editor} />
-        </article>
-      </main>
+      <div className={`doc-layout${panel ? ' has-panel' : ''}`}>
+        <main className="page-wrap" onClick={(e) => e.target === e.currentTarget && editor?.commands.focus('end')}>
+          <article className="page">
+            {printTitle && <h1 className="print-title">{doc.title}</h1>}
+            <EditorContent editor={editor} />
+          </article>
+        </main>
+
+        {panel === 'comments' && (
+          <CommentsPanel
+            threads={threads}
+            me={user}
+            role={role}
+            draftQuote={draftQuote}
+            selectionQuote={selectionText}
+            activeId={activeCommentId}
+            isAnchored={(quote) => (editor ? findQuote(editor.state.doc, quote) !== null : true)}
+            actions={commentActions}
+            onDraftQuote={setDraftQuote}
+            onActivate={jumpToComment}
+            onClose={() => setPanel(null)}
+          />
+        )}
+        {panel === 'history' && (
+          <HistoryPanel
+            docId={initial.id}
+            currentVersion={doc.version}
+            canRestore={editable}
+            onRestore={restore}
+            onClose={() => setPanel(null)}
+          />
+        )}
+      </div>
 
       {shareOpen && (
         <ShareDialog

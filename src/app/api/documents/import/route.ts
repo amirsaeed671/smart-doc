@@ -12,6 +12,6 @@ export const POST = withUser(async ({ req, db, user }) => {
   if (!(file instanceof File)) throw badRequest('Attach a file in the "file" field.')
 
   const { title, content } = await importFile(file.name, Buffer.from(await file.arrayBuffer()))
-  const document = await createDocument(db, user.id, { title, content })
+  const document = await createDocument(db, user.id, { title, content, label: `Imported from ${file.name}`.slice(0, 200) })
   return NextResponse.json({ document }, { status: 201 })
 })

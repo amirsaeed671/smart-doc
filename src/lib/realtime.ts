@@ -17,6 +17,9 @@ export type DocEvent =
   | { type: 'saved'; version: number; by: string }
   | { type: 'title'; title: string; by: string }
   | { type: 'access'; by: string }
+  | { type: 'comments'; by: string }
+  /** "I'm typing right now" pulse, throttled by the sender; drives the live editing indicator. */
+  | { type: 'activity'; userId: string; name: string }
 
 export interface PresenceUser {
   id: string
