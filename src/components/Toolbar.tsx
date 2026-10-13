@@ -4,7 +4,19 @@ import { useEditorState, type Editor } from '@tiptap/react'
 
 type Block = 'paragraph' | 'h1' | 'h2' | 'h3'
 
-export function Toolbar({ editor, disabled }: { editor: Editor; disabled: boolean }) {
+export function Toolbar({
+  editor,
+  disabled,
+  canComment,
+  hasSelection,
+  onComment,
+}: {
+  editor: Editor
+  disabled: boolean
+  canComment: boolean
+  hasSelection: boolean
+  onComment: () => void
+}) {
   const s = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
@@ -82,6 +94,21 @@ export function Toolbar({ editor, disabled }: { editor: Editor; disabled: boolea
       <Btn label="Numbered list" active={s.ordered} onClick={() => chain().toggleOrderedList().run()}>1. List</Btn>
       <Btn label="Quote" active={s.quote} onClick={() => chain().toggleBlockquote().run()}>❝</Btn>
       <Btn label="Code block" active={s.code} onClick={() => chain().toggleCodeBlock().run()}>{'</>'}</Btn>
+      {canComment && (
+        <>
+          <span className="tb-sep" />
+          <button
+            type="button"
+            className="tb-btn tb-comment"
+            onMouseDown={(e) => e.preventDefault()} // keep the text selection
+            onClick={onComment}
+            disabled={!hasSelection}
+            title={hasSelection ? 'Comment on selection (Ctrl+Alt+M)' : 'Select text to comment on it'}
+          >
+            💬 Comment
+          </button>
+        </>
+      )}
     </div>
   )
 }

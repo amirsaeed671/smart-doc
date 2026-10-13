@@ -6,7 +6,9 @@ import { assertValidContent, docToPlainText } from './content'
 import { EMPTY_DOC } from './editor-schema'
 import { badRequest, conflict, forbidden, notFound } from './errors'
 import type { DocumentDetail, DocumentSummary, Role, Share, ShareRole } from './types'
+import { can } from './permissions'
 import { getUserByEmail } from './users'
+import { recordVersion } from './versions'
 
 export const MAX_TITLE_LENGTH = 200
 export const DEFAULT_TITLE = 'Untitled document'
@@ -72,7 +74,7 @@ export function normalizeTitle(title: unknown): string {
 
 const isUuid = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
 
-async function loadAccessible(db: Db, userId: string, docId: string): Promise<DocRow> {
+export async function loadAccessible(db: Db, userId: string, docId: string): Promise<DocRow> {
   // Treat malformed ids and documents the user can't see identically, so the
   // API never reveals whether a document exists.
   if (!isUuid(docId)) throw notFound()
@@ -80,8 +82,6 @@ async function loadAccessible(db: Db, userId: string, docId: string): Promise<Do
   if (!row) throw notFound()
   return row
 }
-
-export const canEdit = (role: Role) => role === 'owner' || role === 'editor'
 
 export async function listDocuments(db: Db, userId: string) {
   const rows = await db.query<DocRow>(`${ACCESSIBLE_DOCS_SQL} ORDER BY d.updated_at DESC`, [userId])
@@ -99,7 +99,7 @@ export async function getDocument(db: Db, userId: string, docId: string): Promis
 export async function createDocument(
   db: Db,
   userId: string,
-  input: { title?: unknown; content?: unknown } = {},
+  input: { title?: unknown; content?: unknown; label?: string } = {},
 ): Promise<DocumentDetail> {
   const title = normalizeTitle(input.title)
   const content = input.content === undefined ? EMPTY_DOC : assertValidContent(input.content)
@@ -108,6 +108,7 @@ export async function createDocument(
     `INSERT INTO documents (id, owner_id, title, content, updated_by) VALUES ($1, $2, $3, $4::jsonb, $2)`,
     [id, userId, title, JSON.stringify(content)],
   )
+  await recordVersion(db, { documentId: id, userId, version: 1, title, content, label: input.label ?? 'Created' })
   return getDocument(db, userId, id)
 }
 
@@ -126,7 +127,7 @@ export async function updateDocument(
   input: { title?: unknown; content?: unknown; baseVersion?: unknown },
 ): Promise<DocumentDetail> {
   const row = await loadAccessible(db, userId, docId)
-  if (!canEdit(row.role)) throw forbidden('You have view-only access to this document.')
+  if (!can(row.role, 'edit')) throw forbidden(`You have ${row.role} access to this document and can't edit it.`)
   if (input.title === undefined && input.content === undefined) throw badRequest('Nothing to update.')
 
   if (input.title !== undefined) {
@@ -144,13 +145,15 @@ export async function updateDocument(
       `UPDATE documents
          SET content = $2::jsonb, version = version + 1, updated_at = now(), updated_by = $3
        WHERE id = $1 AND version = $4
-       RETURNING id`,
+       RETURNING version, title`,
       [docId, JSON.stringify(content), userId, input.baseVersion],
     )
     if (updated.length === 0) {
       const latest = await getDocument(db, userId, docId)
       throw conflict('This document was changed by someone else since you started editing.', { latest })
     }
+    const [{ version, title }] = updated as { version: number; title: string }[]
+    await recordVersion(db, { documentId: docId, userId, version, title, content })
   }
 
   return getDocument(db, userId, docId)
@@ -173,7 +176,7 @@ export async function listShares(db: Db, userId: string, docId: string): Promise
   return rows.map((r) => ({ user: { id: r.id, email: r.email, name: r.name }, role: r.role, createdAt: iso(r.created_at) }))
 }
 
-const SHARE_ROLES: ShareRole[] = ['viewer', 'editor']
+const SHARE_ROLES: ShareRole[] = ['viewer', 'commenter', 'editor']
 
 /** Grant (or change) access for another user. Owner only. Idempotent. */
 export async function shareDocument(
@@ -186,7 +189,7 @@ export async function shareDocument(
   if (row.role !== 'owner') throw forbidden('Only the owner can change sharing.')
   if (typeof input.email !== 'string' || !input.email.includes('@')) throw badRequest('Enter a valid email address.')
   const role = (input.role ?? 'editor') as ShareRole
-  if (!SHARE_ROLES.includes(role)) throw badRequest('Role must be "viewer" or "editor".')
+  if (!SHARE_ROLES.includes(role)) throw badRequest('Role must be "viewer", "commenter" or "editor".')
 
   const target = await getUserByEmail(db, input.email)
   if (!target) throw notFound(`No user with email ${input.email.trim()}.`)

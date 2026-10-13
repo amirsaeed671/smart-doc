@@ -12,15 +12,22 @@ const sampleFile = process.argv[3] ?? path.join(import.meta.dirname, 'sample.md'
 mkdirSync(shots, { recursive: true })
 const browser = await chromium.launch()
 const errors = []
+// ProseMirror ignores DOM selection changes for ~50ms after it sets the selection itself (e.g. on
+// focus). Real users never click-then-type that fast; pause like a human so the test isn't racing it.
+const humanPause = (page) => page.waitForTimeout(120)
 async function toEnd(page) {
   await page.locator('.prose > *:last-child').click()
-  await page.keyboard.press('Control+End'); await page.keyboard.press('End')
+  await humanPause(page)
+  await page.keyboard.press('Control+End')
+  await page.keyboard.press('End')
+  await humanPause(page)
 }
 async function session(email) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 } })
   const page = await ctx.newPage()
   page.on('pageerror', (e) => errors.push(`${email}: ${e.message}`))
-  page.on('console', (m) => m.type() === 'error' && errors.push(`${email} console: ${m.text()}`))
+  page.on('console', (m) => m.type() === 'error' && !m.text().startsWith('Failed to load resource') && errors.push(`${email} console: ${m.text()}`))
+  page.on('response', (r) => r.status() >= 400 && errors.push(`${email} ${r.request().method()} ${new URL(r.url()).pathname} ${r.status()}`))
   await page.goto(BASE + '/login')
   await page.fill('input[type=email]', email)
   await page.fill('input[type=password]', 'demo1234')
@@ -120,6 +127,76 @@ await alice.locator('.share-list li', { hasText: 'Carol' }).locator('button:has-
 await alice.waitForFunction(() => !document.querySelector('.share-list')?.textContent?.includes('Carol'))
 await carol.waitForSelector('text=You no longer have access', { timeout: 15000 })
 log('carol access revoked live')
+
+// ---- Stretch features on the seeded "Q4 Planning Notes" doc ------------------------------
+await alice.goto(BASE + '/')
+await alice.click('text=Q4 Planning Notes')
+await alice.waitForURL(/\/docs\//)
+const q4Url = alice.url()
+await alice.waitForSelector('.comment-mark') // seeded thread is highlighted in the text
+log('seeded comment highlighted:', await alice.locator('.comment-mark').first().innerText())
+
+// Role ladder: share with Carol as Commenter.
+await alice.click('button:has-text("Share")')
+await alice.fill('.share-form input', 'carol@ajaia.dev')
+await alice.locator('.share-form select').selectOption('commenter')
+await alice.click('.share-form button')
+await alice.waitForSelector('.share-list >> text=Carol Diaz')
+await alice.keyboard.press('Escape')
+await alice.waitForSelector('.modal', { state: 'detached' })
+
+await carol.goto(q4Url)
+await carol.waitForSelector('.banner >> text=You can comment but not edit')
+if ((await carol.locator('.prose').getAttribute('contenteditable')) !== 'false') throw new Error('commenter can edit')
+await carol.locator('.prose li p', { hasText: 'Ship the doc editor pilot' }).click({ clickCount: 3 })
+await carol.click('.tb-comment')
+await carol.fill('.composer textarea', 'Which teams are in the pilot?')
+await carol.click('.composer button:has-text("Comment")')
+await carol.waitForSelector('.thread >> text=Which teams are in the pilot?')
+log('commenter added an anchored comment:', await carol.locator('.thread', { hasText: 'Which teams' }).locator('.quote').innerText())
+await carol.screenshot({ path: `${shots}/07-comments.png` })
+
+// Alice sees it live, replies, and resolves it.
+await alice.click('button:has-text("Comments")')
+const carolThread = alice.locator('.thread', { hasText: 'Which teams are in the pilot?' })
+await carolThread.waitFor({ timeout: 15000 })
+await carolThread.click()
+await carolThread.locator('.reply-form input').fill('Sales and Support')
+await carolThread.locator('.reply-form button').click()
+await carolThread.locator('text=Sales and Support').waitFor()
+await carol.waitForSelector('.thread >> text=Sales and Support', { timeout: 15000 })
+log('reply synced to commenter')
+await carolThread.locator('button:has-text("Resolve")').click()
+await alice.waitForSelector('text=Show 1 resolved')
+log('thread resolved')
+
+// Version history: make an edit, then restore the original from history.
+await alice.click('button:has-text("Comments")') // close panel
+await toEnd(alice)
+await alice.keyboard.press('Enter')
+await alice.keyboard.type('Temporary line to be rolled back')
+await alice.waitForSelector('text=All changes saved')
+const fullText = (await alice.locator('.page .prose').innerText()).trim()
+if (!fullText.endsWith('Temporary line to be rolled back')) throw new Error('cursor jumped; text starts: ' + fullText.slice(0, 60))
+await alice.click('button:has-text("History")')
+await alice.waitForFunction(() => document.querySelectorAll('.version-row').length >= 2)
+await alice.screenshot({ path: `${shots}/08-history.png` })
+await alice.locator('.version-row').last().click()
+await alice.waitForSelector('.version-preview .prose')
+await alice.click('button:has-text("Restore this version")')
+await alice.waitForSelector('text=Version restored')
+if (await alice.locator('.page .prose >> text=Temporary line to be rolled back').count()) throw new Error('restore did not roll back')
+log('restored original version; history now has', await alice.locator('.version-row').count(), 'entries')
+
+// Export: Markdown download and print (PDF) layout.
+const md = await (await alice.request.get(`${q4Url.replace(/\?.*/, '')}`.replace('/docs/', '/api/documents/') + '/export?format=md')).text()
+if (!md.startsWith('# Q4 Planning Notes') || !md.includes('- Do we need comments in v1?')) throw new Error('bad markdown: ' + md)
+log('markdown export ok:', md.split('\n').length, 'lines')
+await alice.emulateMedia({ media: 'print' })
+if (await alice.locator('.toolbar').isVisible()) throw new Error('toolbar visible in print layout')
+await alice.screenshot({ path: `${shots}/09-print.png` })
+await alice.emulateMedia({ media: 'screen' })
+log('print layout hides app chrome')
 
 const unexpected = errors.filter((e) => !/40[49]|ERR_INTERNET_DISCONNECTED/.test(e)) // 404/409/offline are provoked on purpose
 if (unexpected.length) { console.error('Unexpected browser errors:', unexpected); process.exitCode = 1 }

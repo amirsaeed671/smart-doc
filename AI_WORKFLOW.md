@@ -23,11 +23,17 @@
   - TipTap's `commands.focus()` waits an animation frame, so pressing Enter in the title and typing straight away lost the first character into the title. Fixed by focusing the view synchronously.
   - The production `SESSION_SECRET` guard also blocked `npm start` locally. Narrowed to Vercel only.
 - **Tooling version check.** The latest TypeScript (7.x) broke Next 15's config loader, so I pinned TypeScript 5.9.
+- **Second round (optional features): three more bugs found by the browser test and fixed at the root:**
+  - TipTap's *trailing-node* plugin appends an empty paragraph on **any** transaction, including the view-only one that draws comment highlights. That counted as an edit, so a read-only Commenter's editor tried to save (a 403 caught by the e2e error check), and an editor's would make a pointless save. Fixed by disabling the plugin and ignoring update events for read-only roles.
+  - The version-preview modal opened inside the sticky side panel, which is its own stacking context, so it sat underneath the toolbar and hid the Restore button. Fixed with a portal.
+  - `useEditor` re-applied its options on every React render because the `extensions` array and `editorProps` were built inline. That forced a `view.updateState()` each time, which can overwrite a DOM selection ProseMirror hasn't read yet. Made all options referentially stable.
+- **Rejected the obvious comment design.** Storing comments as marks inside the document would mean a Commenter's comment edits the document. Comments are anchored by quote and drawn as decorations instead (see the architecture note).
 - **Didn't accept "flaky" as an answer.** One intermittent e2e failure was traced to a real cause: the test typed `" + bob"` at the start of a paragraph, which triggers TipTap's `+ ` → bullet-list shortcut, and it raced a closing modal. I fixed the test rather than adding retries, and checked the product behaviour was correct (both clients converged on the same content).
 
 ## How correctness, UX and reliability were verified
 
-- **Unit/integration tests** (`npm test`) on the rules that matter most: access control for each role, 404 for non-shared docs, share/revoke, rich-text round-trip, conflict detection, schema validation, import sanitisation and file validation.
-- **Three-browser e2e run** (`npm run e2e`) repeated several times on a fresh DB: create → format → reload → share → live sync both directions → viewer read-only → offline edit conflict → resolve → import `.md` → revoke while the viewer has the doc open.
+- **Unit/integration tests** (`npm test`, 23 tests) on the rules that matter most: access control for each role, 404 for non-shared docs, share/revoke, rich-text round-trip, conflict detection, schema validation, import sanitisation, comment permissions, version grouping and restore, Markdown export, comment anchoring, and upgrading the live database schema.
+- **Three-browser e2e run** (`npm run e2e`) repeated several times on a fresh DB: create → format → reload → share → live sync both directions → viewer read-only → offline edit conflict → resolve → import `.md` → revoke while the viewer has the doc open → commenter comments → owner replies and resolves → restore an old version → Markdown export → print layout. Any unexpected 4xx/5xx response fails the run.
+- **One intermittent failure was investigated, not retried away.** Instrumenting ProseMirror transactions showed the test pressing keys within ~15 ms of a click, inside ProseMirror's deliberate 50 ms window for ignoring selection changes. A human can't do that, so the test now pauses like one; the same investigation turned up the real unstable-options bug above.
 - **Screenshots reviewed by eye** for every main screen (dashboard, editor, share dialog, viewer mode, conflict banner, imported doc). Previews were adjusted after review (they repeated the title).
 - `tsc --noEmit` and `next build` are clean.

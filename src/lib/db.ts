@@ -1,4 +1,5 @@
 import 'server-only'
+import { migrate } from './migrations'
 import { seedDatabase } from './seed'
 
 /**
@@ -11,37 +12,6 @@ import { seedDatabase } from './seed'
 export interface Db {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>
 }
-
-const SCHEMA = /* sql */ `
-CREATE TABLE IF NOT EXISTS users (
-  id            uuid PRIMARY KEY,
-  email         text NOT NULL UNIQUE,
-  name          text NOT NULL,
-  password_hash text NOT NULL,
-  created_at    timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS documents (
-  id          uuid PRIMARY KEY,
-  owner_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  title       text NOT NULL,
-  content     jsonb NOT NULL,
-  version     integer NOT NULL DEFAULT 1,
-  updated_by  uuid REFERENCES users(id) ON DELETE SET NULL,
-  created_at  timestamptz NOT NULL DEFAULT now(),
-  updated_at  timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS documents_owner_idx ON documents(owner_id);
-
-CREATE TABLE IF NOT EXISTS document_shares (
-  document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  user_id     uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  role        text NOT NULL CHECK (role IN ('viewer', 'editor')),
-  created_at  timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (document_id, user_id)
-);
-CREATE INDEX IF NOT EXISTS document_shares_user_idx ON document_shares(user_id);
-`
 
 async function createPgDb(url: string): Promise<Db> {
   const { Pool } = await import('pg')
@@ -88,9 +58,7 @@ async function init(): Promise<Db> {
     )
   }
   const db = url ? await createPgDb(url) : await createPgliteDb(process.env.PGLITE_DIR ?? '.data/pglite')
-  for (const statement of SCHEMA.split(';').map((s) => s.trim()).filter(Boolean)) {
-    await db.query(statement)
-  }
+  await migrate(db)
   await seedDatabase(db)
   return db
 }
