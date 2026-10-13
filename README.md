@@ -2,7 +2,7 @@
 
 A lightweight collaborative document editor inspired by Google Docs. You can create, format, import, share and co-edit documents, with live presence and change sync.
 
-**Live demo:** _see [`SUBMISSION.md`](SUBMISSION.md)_ · **Demo accounts:** `alice@ajaia.dev`, `bob@ajaia.dev`, `carol@ajaia.dev`, all with password **`demo1234`**. The login screen also has one-click buttons for each.
+**Live demo:** https://smart-doc-indol-gamma.vercel.app/ · **Demo accounts:** `alice@ajaia.dev`, `bob@ajaia.dev`, `carol@ajaia.dev`, all with password **`demo1234`**. The login screen also has one-click buttons for each.
 
 ![Editor](docs/screenshots/02-editor.png)
 
@@ -60,6 +60,8 @@ npm run e2e          # browser smoke test; needs a running server (see below)
    - `SESSION_SECRET`: output of `openssl rand -hex 32`
    - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`: from step 1
 4. Deploy. Open the URL, sign in as Alice in one browser and as Bob in another, and open "Q4 Planning Notes".
+
+> **Use the pooler URI, not the direct one.** `db.<ref>.supabase.co` is IPv6-only, and Vercel can't reach it (`getaddrinfo ENOTFOUND`). The app now fails with an explicit message if it sees that host on Vercel.
 
 Realtime uses public Broadcast and Presence channels, which new Supabase projects allow by default. Only "version N was saved" notices go over them, never document content (see the architecture note).
 
